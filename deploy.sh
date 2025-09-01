@@ -133,7 +133,7 @@ echo -e "\n${GREEN}Creating Gunicorn service...${NC}"
 cat > "/etc/supervisor/conf.d/apple-subscription.conf" << EOL
 [program:apple-subscription]
 directory=${DEPLOY_PATH}
-command=${DEPLOY_PATH}/venv/bin/gunicorn -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:${APP_PORT} main:app
+command=${DEPLOY_PATH}/venv/bin/gunicorn -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:${APP_PORT} main:app --log-level debug --timeout 120
 user=${APP_USER}
 autostart=true
 autorestart=true
@@ -141,6 +141,9 @@ stopasgroup=true
 killasgroup=true
 stdout_logfile=${DEPLOY_PATH}/logs/gunicorn.log
 stderr_logfile=${DEPLOY_PATH}/logs/gunicorn-error.log
+startretries=10
+startsecs=10
+environment=PYTHONPATH="${DEPLOY_PATH}",PATH="${DEPLOY_PATH}/venv/bin:%(ENV_PATH)s"
 EOL
 
 # Create Nginx configuration
@@ -207,6 +210,31 @@ echo -e "You can use environment variables or a secure secret management solutio
 # Final check
 echo -e "\n${GREEN}Checking service status...${NC}"
 supervisorctl status apple-subscription
+
+# Check service logs if there's an issue
+if supervisorctl status apple-subscription | grep -q "FATAL"; then
+    echo -e "\n${RED}Service failed to start. Checking logs...${NC}"
+    echo -e "\n${YELLOW}Gunicorn error log:${NC}"
+    tail -n 20 "$DEPLOY_PATH/logs/gunicorn-error.log"
+    
+    echo -e "\n${YELLOW}Trying to fix common issues...${NC}"
+    
+    # Fix directory permissions
+    echo -e "Setting proper permissions for all files..."
+    chown -R "$APP_USER":"$APP_USER" "$DEPLOY_PATH"
+    chmod -R 750 "$DEPLOY_PATH"
+    
+    # Ensure log directory exists and is writable
+    mkdir -p "$DEPLOY_PATH/logs"
+    chown -R "$APP_USER":"$APP_USER" "$DEPLOY_PATH/logs"
+    chmod -R 755 "$DEPLOY_PATH/logs"
+    
+    # Restart the service
+    echo -e "Restarting service..."
+    supervisorctl restart apple-subscription
+    sleep 5
+    supervisorctl status apple-subscription
+fi
 
 echo -e "\n${BLUE}============================================${NC}"
 echo -e "${GREEN}Deployment completed successfully!${NC}"
