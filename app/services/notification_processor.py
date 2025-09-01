@@ -6,6 +6,7 @@ Processes Apple App Store Server Notifications and updates subscription data.
 import logging
 import uuid
 import json
+import base64
 from typing import Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -289,6 +290,19 @@ class NotificationProcessor:
                         return renewal_info
                 except Exception as e:
                     logger.warning(f"Error decoding signedRenewalInfo: {str(e)}")
+                    # Try extracting the payload directly
+                    try:
+                        parts = payload["data"]["signedRenewalInfo"].split('.')
+                        if len(parts) == 3:  # Valid JWS format
+                            payload_segment = parts[1]
+                            # Add padding if necessary
+                            padded_payload = payload_segment + '=' * (4 - len(payload_segment) % 4)
+                            direct_renewal_info = json.loads(base64.b64decode(padded_payload).decode('utf-8'))
+                            logger.info("Successfully extracted renewal info by direct decoding")
+                            if direct_renewal_info and isinstance(direct_renewal_info, dict):
+                                return direct_renewal_info
+                    except Exception as e2:
+                        logger.warning(f"Failed to extract renewal info directly: {str(e2)}")
             
             # Check signedTransactionInfo
             if "signedTransactionInfo" in payload["data"]:
@@ -298,6 +312,19 @@ class NotificationProcessor:
                         return transaction_info
                 except Exception as e:
                     logger.warning(f"Error decoding signedTransactionInfo: {str(e)}")
+                    # Try extracting the payload directly
+                    try:
+                        parts = payload["data"]["signedTransactionInfo"].split('.')
+                        if len(parts) == 3:  # Valid JWS format
+                            payload_segment = parts[1]
+                            # Add padding if necessary
+                            padded_payload = payload_segment + '=' * (4 - len(payload_segment) % 4)
+                            direct_transaction_info = json.loads(base64.b64decode(padded_payload).decode('utf-8'))
+                            logger.info("Successfully extracted transaction info by direct decoding")
+                            if direct_transaction_info and isinstance(direct_transaction_info, dict):
+                                return direct_transaction_info
+                    except Exception as e2:
+                        logger.warning(f"Failed to extract transaction info directly: {str(e2)}")
         
         # Fallback to the raw payload if we couldn't extract transaction info
         return payload

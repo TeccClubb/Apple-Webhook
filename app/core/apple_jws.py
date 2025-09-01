@@ -109,7 +109,21 @@ class AppleJWSVerifier:
                 
                 for key_id, key_data in public_keys.items():
                     try:
-                        alg = header_data.get("alg", "RS256")
+            # Determine appropriate algorithm based on key type and header
+            key_kty = key_data.get("kty")
+            header_alg = header_data.get("alg", "")
+            
+            # First check the header's alg if it's specified
+            if header_alg:
+                alg = header_alg
+            # Otherwise infer from key type
+            elif key_kty == "EC":
+                alg = "ES256"  # Typically used with EC keys
+            elif key_kty == "RSA":
+                alg = "RS256"  # Typically used with RSA keys
+            else:
+                alg = "RS256"  # Default                        logger.info(f"Trying verification with key {key_id} using algorithm {alg}")
+                        
                         payload = jwt.decode(
                             jws_token,
                             key_data,
@@ -139,11 +153,28 @@ class AppleJWSVerifier:
             # Get the public key for this kid
             key_data = public_keys[kid]
             
+            # Determine appropriate algorithm based on key type and header
+            key_kty = key_data.get("kty")
+            header_alg = header_data.get("alg", "")
+            
+            # First check the header's alg if it's specified
+            if header_alg:
+                alg = header_alg
+            # Otherwise infer from key type
+            elif key_kty == "EC":
+                alg = "ES256"  # Typically used with EC keys
+            elif key_kty == "RSA":
+                alg = "RS256"  # Typically used with RSA keys
+            else:
+                alg = "RS256"  # Default
+                
+            logger.info(f"Verifying with key {kid} using algorithm {alg}")
+            
             # Verify and decode the JWS token
             payload = jwt.decode(
                 jws_token,
                 key_data,
-                algorithms=[header_data.get("alg", "RS256")],
+                algorithms=[alg],
                 options={"verify_exp": False}  # Skip expiration check for App Store notifications
             )
             

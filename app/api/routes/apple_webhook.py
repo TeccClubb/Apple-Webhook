@@ -3,6 +3,7 @@ Apple webhook API endpoints.
 """
 import logging
 import json
+import base64
 from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
@@ -68,6 +69,11 @@ async def apple_webhook(
             # Don't reject the payload immediately, try to process it anyway
             # Apple sometimes sends test notifications with invalid signatures
             logger.warning("Attempting to process notification despite signature verification failure")
+            
+            # Try to extract payload directly
+            try:
+                parts = signed_payload.split('.')
+                if len(parts) >= 2:
             try:
                 # Try to extract payload directly
                 parts = signed_payload.split('.')

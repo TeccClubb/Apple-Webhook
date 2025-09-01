@@ -28,6 +28,13 @@ cp -f ${DEPLOY_PATH}/app/api/routes/apple_webhook.py ${DEPLOY_PATH}/app/api/rout
 
 echo -e "${GREEN}Original files backed up.${NC}"
 
+# Copy updated files from the local repo to the deployment directory
+echo -e "${YELLOW}Copying updated files...${NC}"
+cp -f app/core/apple_jws.py ${DEPLOY_PATH}/app/core/apple_jws.py
+cp -f app/services/notification_processor.py ${DEPLOY_PATH}/app/services/notification_processor.py
+cp -f app/api/routes/apple_webhook.py ${DEPLOY_PATH}/app/api/routes/apple_webhook.py
+echo -e "${GREEN}Files updated successfully.${NC}"
+
 # Restart the service
 echo -e "\n${GREEN}Restarting the service...${NC}"
 supervisorctl restart apple-subscription
