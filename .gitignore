@@ -36,8 +36,16 @@ env/
 *.db
 *.sqlite3
 
-# Apple private keys
+# Apple private keys and sensitive files
 keys/*.p8
+*.p8
+*.key
+*.pem
+**/private_key.*
+.env.production
+.env.local
+credentials.json
+*_credentials.*
 
 # Logs
 *.log

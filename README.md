@@ -2,6 +2,39 @@
 
 A production-ready Python service for handling Apple App Store Server Notifications (v2) for subscription events. This service provides a webhook endpoint for receiving Apple's server notifications, processes them, and provides REST APIs for querying user subscription statuses.
 
+## Quick Deployment with Script
+
+For easy deployment to your VPS with domain `apple.safeprovpn.com`, use the included deployment script:
+
+1. Connect to your VPS:
+   ```bash
+   ssh user@your-vps-ip
+   ```
+
+2. Upload the deploy.sh script to your server:
+   ```bash
+   scp deploy.sh user@your-vps-ip:~/
+   ```
+
+3. Make the script executable and run it:
+   ```bash
+   chmod +x deploy.sh
+   sudo ./deploy.sh
+   ```
+
+This script will:
+- Install all dependencies (Python, Nginx, PostgreSQL, etc.)
+- Set up a PostgreSQL database
+- Configure the environment with your Apple credentials
+- Set up HTTPS with Let's Encrypt
+- Configure Nginx as a reverse proxy
+- Start the service using Supervisor
+
+After deployment, test your connection to Apple's servers:
+```bash
+curl https://apple.safeprovpn.com/api/v1/test-connection
+```
+
 ## Features
 
 - Process Apple App Store Server Notifications via webhook
@@ -309,6 +342,10 @@ sudo systemctl restart apple-subscription
 - Keep dependencies updated
 - Implement IP whitelisting for webhook endpoints if possible
 - Monitor logs for unusual activity
+- **Important:** Store private keys and secrets securely:
+  - Avoid committing private keys directly to repositories
+  - Consider using environment variables or secure secret management solutions
+  - If you've already committed sensitive files, consider rotating those credentials and using `.gitignore`
 
 ## License
 
