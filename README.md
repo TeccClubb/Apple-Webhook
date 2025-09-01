@@ -2,6 +2,66 @@
 
 A production-ready Python service for handling Apple App Store Server Notifications (v2) for subscription events. This service provides a webhook endpoint for receiving Apple's server notifications, processes them, and provides REST APIs for querying user subscription statuses.
 
+## Fresh VPS Installation Guide
+
+If you're setting up on a newly reinstalled VPS, follow these steps for a complete installation:
+
+1. Connect to your VPS:
+   ```bash
+   ssh user@your-vps-ip
+   ```
+
+2. Update your system:
+   ```bash
+   sudo apt update && sudo apt upgrade -y
+   ```
+
+3. Install Git:
+   ```bash
+   sudo apt install git -y
+   ```
+
+4. Clone the repository:
+   ```bash
+   git clone https://github.com/TeccClubb/Apple-Webhook.git
+   cd Apple-Webhook
+   ```
+
+5. Make the deployment scripts executable:
+   ```bash
+   chmod +x deploy.sh troubleshoot.sh check_system.py
+   ```
+
+6. Run the system compatibility checker to automatically install required dependencies:
+   ```bash
+   sudo python3 check_system.py --fix
+   ```
+
+7. Deploy the service:
+   ```bash
+   sudo ./deploy.sh
+   ```
+
+8. If you encounter any dependency issues, especially with PostgreSQL or psycopg2, run the troubleshooting script:
+   ```bash
+   sudo ./troubleshoot.sh
+   ```
+
+9. Copy your Apple private key to the server:
+   ```bash
+   # On your local machine:
+   scp /path/to/AuthKey_XXXXX.p8 user@your-vps-ip:~/Apple-Webhook/keys/
+   
+   # On your VPS:
+   sudo chmod 600 ~/Apple-Webhook/keys/AuthKey_XXXXX.p8
+   sudo chown appuser:appuser ~/Apple-Webhook/keys/AuthKey_XXXXX.p8
+   ```
+
+10. Verify the deployment:
+    ```bash
+    curl https://apple.safeprovpn.com/api/v1/test-connection
+    ```
+
 ## Quick Deployment with Script
 
 For easy deployment to your VPS with domain `apple.safeprovpn.com`, use the included deployment script:
@@ -303,6 +363,93 @@ Authorization: Bearer {token}
 4. Set the Sandbox URL to: `https://your_domain.com/api/v1/webhook/apple`
 5. Select Version 2 for the notification format
 
+## Troubleshooting Common Issues
+
+### PostgreSQL and psycopg2 Installation Issues
+
+If you encounter issues with PostgreSQL or psycopg2-binary installation:
+
+1. Install PostgreSQL development packages:
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y libpq-dev postgresql-server-dev-all build-essential python3-dev
+   ```
+
+2. Reinstall psycopg2 properly:
+   ```bash
+   cd /opt/apple-subscription-service
+   source venv/bin/activate
+   pip install --no-cache-dir --no-build-isolation psycopg2-binary
+   ```
+
+3. If the above doesn't work, try the source version:
+   ```bash
+   pip install --no-cache-dir psycopg2
+   ```
+
+### Database Connection Issues
+
+If the application can't connect to the database:
+
+1. Check PostgreSQL service status:
+   ```bash
+   sudo systemctl status postgresql
+   ```
+
+2. Verify that PostgreSQL is configured to accept connections:
+   ```bash
+   sudo nano /etc/postgresql/*/main/postgresql.conf
+   # Ensure listen_addresses = 'localhost' is uncommented
+   
+   sudo nano /etc/postgresql/*/main/pg_hba.conf
+   # Ensure there's a line like: "local all all peer"
+   ```
+
+3. Restart PostgreSQL after configuration changes:
+   ```bash
+   sudo systemctl restart postgresql
+   ```
+
+### Nginx Configuration Issues
+
+If you can't access your API through HTTPS:
+
+1. Check Nginx configuration:
+   ```bash
+   sudo nginx -t
+   ```
+
+2. Verify that your domain points to your server:
+   ```bash
+   nslookup apple.safeprovpn.com
+   ```
+
+3. Ensure Let's Encrypt certificates are properly set up:
+   ```bash
+   sudo certbot certificates
+   ```
+
+### Service Startup Issues
+
+If the service doesn't start:
+
+1. Check the service status:
+   ```bash
+   sudo supervisorctl status apple-subscription
+   ```
+
+2. Examine error logs:
+   ```bash
+   tail -n 100 /opt/apple-subscription-service/logs/gunicorn-error.log
+   ```
+
+3. Run the application directly to see immediate output:
+   ```bash
+   cd /opt/apple-subscription-service
+   source venv/bin/activate
+   python -m uvicorn main:app --host 127.0.0.1 --port 8080
+   ```
+
 ## Monitoring and Maintenance
 
 ### Logs
@@ -313,26 +460,102 @@ View application logs:
 sudo journalctl -u apple-subscription
 ```
 
+### Supervisor Logs
+
+View supervisor logs:
+
+```bash
+sudo supervisorctl tail -f apple-subscription
+```
+
+### VPS Service Management
+
+Common commands for managing your service:
+
+```bash
+# Start the service
+sudo supervisorctl start apple-subscription
+
+# Stop the service
+sudo supervisorctl stop apple-subscription
+
+# Restart the service
+sudo supervisorctl restart apple-subscription
+
+# Check the status
+sudo supervisorctl status apple-subscription
+
+# View logs in real-time
+sudo supervisorctl tail -f apple-subscription
+```
+
+### Nginx Management
+
+Commands for managing Nginx:
+
+```bash
+# Test configuration
+sudo nginx -t
+
+# Reload configuration without downtime
+sudo systemctl reload nginx
+
+# Restart Nginx
+sudo systemctl restart nginx
+
+# Check status
+sudo systemctl status nginx
+```
+
+### Database Management
+
+Commands for managing PostgreSQL:
+
+```bash
+# Connect to PostgreSQL
+sudo -u postgres psql
+
+# Connect to the application database
+sudo -u postgres psql -d apple_subscriptions
+
+# Useful PostgreSQL commands:
+# \dt - list tables
+# \q - quit
+# SELECT * FROM subscriptions LIMIT 10; - view recent subscriptions
+```
+
 ### Updating the Application
 
 1. Pull the latest code:
 
 ```bash
-cd /path/to/apple-subscription-service
-git pull
+cd /opt/apple-subscription-service
+sudo git pull
 ```
 
 2. Install any new dependencies:
 
 ```bash
-source venv/bin/activate
-pip install -r requirements.txt
+cd /opt/apple-subscription-service
+sudo -u appuser bash -c "source venv/bin/activate && pip install -r requirements.txt"
 ```
 
 3. Restart the service:
 
 ```bash
-sudo systemctl restart apple-subscription
+sudo supervisorctl restart apple-subscription
+```
+
+### Backup and Restore
+
+Backup your PostgreSQL database:
+
+```bash
+# Create a backup
+sudo -u postgres pg_dump apple_subscriptions > backup.sql
+
+# Restore from backup
+sudo -u postgres psql apple_subscriptions < backup.sql
 ```
 
 ## Security Considerations

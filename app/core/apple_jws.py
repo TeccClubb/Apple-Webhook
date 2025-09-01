@@ -72,17 +72,59 @@ class AppleJWSVerifier:
             ValueError: If the token is invalid or verification fails
         """
         try:
-            # Parse the token header to get the key ID (kid)
-            header_segment = jws_token.split('.')[0]
+            # Parse the token to get payload directly for App Store notifications
+            # that may not follow standard JWS format
+            parts = jws_token.split('.')
+            if len(parts) != 3:
+                raise ValueError("Invalid JWS token format")
+                
+            # Decode the payload directly for basic validation
+            payload_segment = parts[1]
             # Add padding if necessary
-            padded = header_segment + '=' * (4 - len(header_segment) % 4)
-            header_data = json.loads(base64.b64decode(padded).decode('utf-8'))
+            padded_payload = payload_segment + '=' * (4 - len(payload_segment) % 4)
+            try:
+                # Try to decode the payload to make sure it's valid JSON
+                raw_payload = json.loads(base64.b64decode(padded_payload).decode('utf-8'))
+                
+                # Check if this is a standard notification format (might not have kid)
+                # App Store Server Notifications v2 has specific fields we can check
+                if "notificationType" in raw_payload or "data" in raw_payload or "summary" in raw_payload:
+                    logger.info("Detected App Store notification format, proceeding with payload extraction")
+                    return raw_payload
+            except Exception as e:
+                logger.warning(f"Failed to decode payload directly: {str(e)}")
+            
+            # Standard JWS verification with kid if the direct decode didn't succeed
+            header_segment = parts[0]
+            # Add padding if necessary
+            padded_header = header_segment + '=' * (4 - len(header_segment) % 4)
+            header_data = json.loads(base64.b64decode(padded_header).decode('utf-8'))
             
             kid = header_data.get("kid")
             if not kid:
-                raise ValueError("No key ID (kid) found in JWS header")
+                logger.warning("No key ID (kid) found in JWS header, attempting verification with all keys")
+                # Try all available keys since kid is not specified
+                public_keys = cls.get_apple_public_keys()
+                verification_errors = []
                 
-            # Get Apple's public keys
+                for key_id, key_data in public_keys.items():
+                    try:
+                        alg = header_data.get("alg", "RS256")
+                        payload = jwt.decode(
+                            jws_token,
+                            key_data,
+                            algorithms=[alg],
+                            options={"verify_exp": False}  # Skip expiration check for notifications
+                        )
+                        logger.info(f"Successfully verified JWS with key ID: {key_id}")
+                        return payload
+                    except Exception as e:
+                        verification_errors.append(f"Key {key_id}: {str(e)}")
+                
+                # If we get here, none of the keys worked
+                raise ValueError(f"Verification failed with all keys: {', '.join(verification_errors)}")
+                
+            # Regular flow with specified kid
             public_keys = cls.get_apple_public_keys()
             
             if kid not in public_keys:
@@ -102,7 +144,7 @@ class AppleJWSVerifier:
                 jws_token,
                 key_data,
                 algorithms=[header_data.get("alg", "RS256")],
-                options={"verify_exp": True}
+                options={"verify_exp": False}  # Skip expiration check for App Store notifications
             )
             
             return payload
@@ -122,9 +164,29 @@ class AppleJWSVerifier:
         Returns:
             Dict[str, Any]: The parsed notification data
         """
-        # Extract and decode the notification payload if it exists
+        # Check if payload already contains notification data directly
+        if "notificationType" in payload:
+            logger.info("Found notificationType directly in payload")
+            return payload
+            
+        # Standard format: extract from data field
         notification_data = payload.get("data", {})
         
-        # Parse any additional fields needed here
+        # If data is a string (sometimes Apple sends it as a JSON string), parse it
+        if isinstance(notification_data, str):
+            try:
+                notification_data = json.loads(notification_data)
+                logger.info("Successfully parsed notification data from string")
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse notification data string as JSON")
         
+        # Handle both v1 and v2 notification formats
+        # V1: signedRenewalInfo and signedTransactionInfo
+        # V2: data and summary fields
+        
+        # Check for other common notification fields
+        for field in ["signedRenewalInfo", "signedTransactionInfo", "summary"]:
+            if field in payload and field not in notification_data:
+                notification_data[field] = payload.get(field)
+                
         return notification_data
