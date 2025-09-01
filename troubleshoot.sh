@@ -99,6 +99,34 @@ done
 
 # 4. Check Python environment
 echo -e "\n${GREEN}Checking Python environment...${NC}"
+
+# Check for required system dependencies first
+echo -e "\n${YELLOW}Checking for required system dependencies...${NC}"
+if ! $IS_MAC; then
+    # Check for PostgreSQL development libraries on Linux
+    if ! dpkg -l | grep -q "libpq-dev"; then
+        echo -e "${RED}PostgreSQL development libraries missing. Installing...${NC}"
+        apt-get update
+        apt-get install -y libpq-dev postgresql-server-dev-all build-essential
+    else
+        echo -e "${CYAN}PostgreSQL development libraries are installed${NC}"
+    fi
+else
+    # Check for PostgreSQL on macOS
+    if ! brew list | grep -q "libpq"; then
+        echo -e "${RED}PostgreSQL development libraries missing. Installing via Homebrew...${NC}"
+        brew install libpq postgresql
+        # Export path to libpq for compilation
+        export LDFLAGS="-L/usr/local/opt/libpq/lib"
+        export CPPFLAGS="-I/usr/local/opt/libpq/include"
+    else
+        echo -e "${CYAN}PostgreSQL libraries are installed${NC}"
+        # Export path to libpq for compilation
+        export LDFLAGS="-L/usr/local/opt/libpq/lib"
+        export CPPFLAGS="-I/usr/local/opt/libpq/include"
+    fi
+fi
+
 if [ -f "$DEPLOY_PATH/venv/bin/activate" ]; then
     source "$DEPLOY_PATH/venv/bin/activate" || {
         echo -e "${RED}Failed to activate virtual environment${NC}"
@@ -107,7 +135,8 @@ if [ -f "$DEPLOY_PATH/venv/bin/activate" ]; then
         rm -rf venv
         python3 -m venv venv
         source venv/bin/activate
-        pip install -r requirements.txt
+        pip install --upgrade pip
+        pip install wheel setuptools
     }
     echo -e "${YELLOW}Python version:${NC}"
     python3 --version
@@ -117,12 +146,30 @@ if [ -f "$DEPLOY_PATH/venv/bin/activate" ]; then
     
     # Check for missing dependencies
     echo -e "\n${YELLOW}Checking for missing dependencies...${NC}"
-    for pkg in "fastapi" "uvicorn" "gunicorn" "psycopg2-binary"; do
+    for pkg in "fastapi" "uvicorn" "gunicorn"; do
         if ! pip list | grep -q "$pkg"; then
             echo -e "${RED}Missing package: $pkg. Installing...${NC}"
             pip install "$pkg"
         fi
     done
+    
+    # Special handling for psycopg2-binary due to compilation issues
+    if ! pip list | grep -q "psycopg2"; then
+        echo -e "${RED}psycopg2 not found. Installing binary version...${NC}"
+        pip install --no-build-isolation psycopg2-binary
+        
+        # If that failed, try alternative approach
+        if [ $? -ne 0 ]; then
+            echo -e "${YELLOW}Binary installation failed, trying alternative approach...${NC}"
+            if $IS_MAC; then
+                # On macOS, use brew-installed PostgreSQL
+                LDFLAGS="-L/usr/local/opt/libpq/lib" CPPFLAGS="-I/usr/local/opt/libpq/include" pip install psycopg2-binary
+            else
+                # On Linux, try with system libraries explicitly
+                pip install --no-cache-dir psycopg2-binary
+            fi
+        fi
+    fi
 else
     echo -e "${RED}Virtual environment not found. Creating a new one...${NC}"
     cd "$DEPLOY_PATH"
@@ -308,6 +355,43 @@ else
 fi
 chmod -R 755 "$LOG_PATH"
 
+# Fix Python dependency issues
+echo -e "\n${YELLOW}Checking for dependency issues...${NC}"
+cd "$DEPLOY_PATH"
+source venv/bin/activate
+
+# Attempt to fix PostgreSQL dependency issues
+if ! pip list | grep -q "psycopg2"; then
+    echo -e "${RED}PostgreSQL Python driver missing. Attempting to fix...${NC}"
+    
+    # Install build dependencies
+    if ! $IS_MAC; then
+        echo -e "${CYAN}Installing PostgreSQL development packages...${NC}"
+        apt-get update && apt-get install -y libpq-dev postgresql-server-dev-all gcc python3-dev
+        
+        # Try different approaches to install psycopg2
+        echo -e "${CYAN}Attempting to install psycopg2-binary...${NC}"
+        pip install --no-cache-dir psycopg2-binary || pip install --no-cache-dir psycopg2
+    else
+        echo -e "${CYAN}Installing PostgreSQL dependencies via Homebrew...${NC}"
+        brew install libpq postgresql || true
+        
+        # Set environment variables for macOS compilation
+        export LDFLAGS="-L$(brew --prefix libpq)/lib"
+        export CPPFLAGS="-I$(brew --prefix libpq)/include"
+        export PATH="$(brew --prefix libpq)/bin:$PATH"
+        
+        echo -e "${CYAN}Attempting to install psycopg2-binary with explicit paths...${NC}"
+        LDFLAGS="$LDFLAGS" CPPFLAGS="$CPPFLAGS" pip install --no-cache-dir psycopg2-binary || \
+        pip install --no-cache-dir psycopg2
+    fi
+fi
+
+# Reinstall other critical packages
+echo -e "${YELLOW}Reinstalling critical packages...${NC}"
+pip install --upgrade pip wheel setuptools
+pip install --no-cache-dir -U fastapi uvicorn gunicorn
+
 # Create database tables if they don't exist
 echo -e "${YELLOW}Ensuring database tables are created...${NC}"
 cd "$DEPLOY_PATH"
@@ -412,7 +496,76 @@ else
     done
 fi
 
-# 13. Create a log summary
+# 13. Verify package installations and requirements
+echo -e "\n${GREEN}Verifying package installations and requirements...${NC}"
+cd "$DEPLOY_PATH"
+source venv/bin/activate
+
+# Check if requirements.txt exists and install all requirements
+if [ -f "$DEPLOY_PATH/requirements.txt" ]; then
+    echo -e "${YELLOW}Installing all requirements from requirements.txt...${NC}"
+    
+    # Use different approaches based on OS
+    if $IS_MAC; then
+        # For macOS, use homebrew paths
+        echo -e "${CYAN}Using Homebrew paths for compilation on macOS...${NC}"
+        export LDFLAGS="-L$(brew --prefix libpq)/lib"
+        export CPPFLAGS="-I$(brew --prefix libpq)/include"
+        export PATH="$(brew --prefix libpq)/bin:$PATH"
+        
+        # Try to install with specific flags for PostgreSQL
+        LDFLAGS="$LDFLAGS" CPPFLAGS="$CPPFLAGS" pip install --no-cache-dir -r requirements.txt || {
+            echo -e "${RED}Standard installation failed. Attempting alternatives...${NC}"
+            
+            # Try installing each requirement individually
+            while IFS= read -r requirement
+            do
+                if [[ ! -z "$requirement" && "$requirement" != \#* ]]; then
+                    echo -e "${YELLOW}Installing $requirement...${NC}"
+                    pip install --no-cache-dir "$requirement" || echo -e "${RED}Failed to install $requirement${NC}"
+                fi
+            done < requirements.txt
+        }
+    else
+        # For Linux
+        echo -e "${CYAN}Installing requirements on Linux...${NC}"
+        pip install --no-build-isolation --no-cache-dir -r requirements.txt || {
+            echo -e "${RED}Standard installation failed. Attempting alternatives...${NC}"
+            
+            # Try installing each requirement individually
+            while IFS= read -r requirement
+            do
+                if [[ ! -z "$requirement" && "$requirement" != \#* ]]; then
+                    echo -e "${YELLOW}Installing $requirement...${NC}"
+                    pip install --no-cache-dir "$requirement" || echo -e "${RED}Failed to install $requirement${NC}"
+                fi
+            done < requirements.txt
+        }
+    fi
+    
+    # Verify critical packages after installation attempts
+    echo -e "\n${YELLOW}Verifying critical packages after installation...${NC}"
+    for pkg in "fastapi" "uvicorn" "gunicorn" "psycopg2-binary"; do
+        if pip list | grep -q "$pkg"; then
+            echo -e "${GREEN}✓ $pkg is installed${NC}"
+        else
+            echo -e "${RED}✗ $pkg is still missing${NC}"
+            
+            # Final attempt to install the specific package
+            echo -e "${YELLOW}Final attempt to install $pkg...${NC}"
+            if [[ "$pkg" == "psycopg2-binary" ]]; then
+                # For psycopg2, try binary install first, then source
+                pip install --no-cache-dir psycopg2-binary || pip install --no-cache-dir psycopg2
+            else
+                pip install --no-cache-dir "$pkg"
+            fi
+        fi
+    done
+else
+    echo -e "${RED}No requirements.txt file found!${NC}"
+fi
+
+# 14. Create a log summary
 echo -e "\n${GREEN}Creating troubleshooting summary...${NC}"
 SUMMARY_FILE="$DEPLOY_PATH/troubleshoot_summary.log"
 {
@@ -490,5 +643,22 @@ echo -e "2. Permission issues: Ensure $APP_USER has access to all files"
 echo -e "3. Apple certificate problems: Verify .p8 files in keys directory"
 echo -e "4. Port conflicts: Make sure no other service is using ports 8000/8080"
 echo -e "5. Missing dependencies: Check requirements.txt and reinstall if needed"
+
+# Display PostgreSQL-specific troubleshooting tips
+echo -e "\n${YELLOW}PostgreSQL dependency troubleshooting:${NC}"
+if $IS_MAC; then
+    echo -e "1. Install PostgreSQL with: ${BLUE}brew install postgresql libpq${NC}"
+    echo -e "2. Link PostgreSQL: ${BLUE}brew link --force libpq${NC}"
+    echo -e "3. Set environment variables before pip install:"
+    echo -e "   ${BLUE}export LDFLAGS=\"-L$(brew --prefix libpq)/lib\"${NC}"
+    echo -e "   ${BLUE}export CPPFLAGS=\"-I$(brew --prefix libpq)/include\"${NC}"
+    echo -e "   ${BLUE}export PATH=\"$(brew --prefix libpq)/bin:\$PATH\"${NC}"
+    echo -e "4. Install psycopg2 with: ${BLUE}pip install psycopg2-binary --no-cache-dir${NC}"
+else
+    echo -e "1. Install PostgreSQL dev packages: ${BLUE}apt-get install libpq-dev postgresql-server-dev-all${NC}"
+    echo -e "2. Install build essentials: ${BLUE}apt-get install build-essential python3-dev${NC}"
+    echo -e "3. Install psycopg2 with: ${BLUE}pip install --no-build-isolation psycopg2-binary${NC}"
+    echo -e "4. Alternative: ${BLUE}pip install --no-cache-dir psycopg2${NC}"
+fi
 
 echo -e "\n${BLUE}============================================${NC}"

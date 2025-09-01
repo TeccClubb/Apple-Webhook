@@ -37,6 +37,22 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# Run system compatibility check
+echo -e "\n${GREEN}Running system compatibility check...${NC}"
+if [ -f "./check_system.py" ]; then
+    python3 ./check_system.py --fix
+    
+    # Exit if system check failed
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}System compatibility check failed. Please fix the issues and try again.${NC}"
+        echo -e "${YELLOW}You can run the check script manually with: python3 check_system.py --fix${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}System compatibility check passed!${NC}"
+else
+    echo -e "${YELLOW}System compatibility check script not found. Continuing without checks...${NC}"
+fi
+
 # Update system
 echo -e "\n${GREEN}Updating system packages...${NC}"
 apt-get update && apt-get upgrade -y
@@ -45,6 +61,10 @@ apt-get update && apt-get upgrade -y
 echo -e "\n${GREEN}Installing dependencies...${NC}"
 apt-get install -y python3 python3-pip python3-venv nginx certbot python3-certbot-nginx \
                    git supervisor postgresql postgresql-contrib
+
+# Install build dependencies for Python packages
+echo -e "\n${GREEN}Installing build dependencies for Python packages...${NC}"
+apt-get install -y build-essential python3-dev libpq-dev postgresql-server-dev-all
 
 # Create app user if it doesn't exist
 if ! id -u "$APP_USER" &>/dev/null; then
@@ -72,11 +92,26 @@ echo -e "\n${GREEN}Setting up Python virtual environment...${NC}"
 cd "$DEPLOY_PATH"
 python3 -m venv venv
 source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+pip install --upgrade pip wheel setuptools
 
-# Install production dependencies
-pip install gunicorn psycopg2-binary
+# Install psycopg2-binary first with special handling
+echo -e "\n${GREEN}Installing PostgreSQL adapter...${NC}"
+pip install --no-cache-dir --no-build-isolation psycopg2-binary || {
+    echo -e "${YELLOW}Standard psycopg2-binary installation failed. Trying alternative approach...${NC}"
+    # Try with explicit system library paths
+    pip install --no-cache-dir psycopg2-binary || {
+        echo -e "${YELLOW}Falling back to source psycopg2 installation...${NC}"
+        pip install --no-cache-dir psycopg2
+    }
+}
+
+# Install other requirements
+echo -e "\n${GREEN}Installing other Python dependencies...${NC}"
+pip install --no-cache-dir -r requirements.txt
+
+# Ensure production dependencies
+echo -e "\n${GREEN}Installing production dependencies...${NC}"
+pip install --no-cache-dir gunicorn uvicorn
 
 # Create keys directory if it doesn't exist
 mkdir -p "$DEPLOY_PATH/keys"
@@ -207,7 +242,44 @@ echo -e "Having private keys in a Git repository is generally not recommended fo
 echo -e "Consider removing the key from the repository and managing it separately."
 echo -e "You can use environment variables or a secure secret management solution instead."
 
-# Final check
+# Final check and validation steps
+echo -e "\n${GREEN}Running pre-flight validation...${NC}"
+
+# Validate Python dependencies
+echo -e "\n${GREEN}Validating Python dependencies...${NC}"
+source "$DEPLOY_PATH/venv/bin/activate"
+MISSING_PACKAGES=""
+
+for pkg in "fastapi" "uvicorn" "gunicorn" "psycopg2" "sqlalchemy"; do
+    if ! pip list | grep -q "$pkg"; then
+        echo -e "${RED}Missing critical package: $pkg. Installing...${NC}"
+        MISSING_PACKAGES="$MISSING_PACKAGES $pkg"
+        pip install --no-cache-dir "$pkg"
+    else
+        echo -e "${GREEN}✓ $pkg is installed${NC}"
+    fi
+done
+
+# If we had to install missing packages, let's try to create database tables to verify everything works
+if [ ! -z "$MISSING_PACKAGES" ]; then
+    echo -e "\n${YELLOW}Installed missing packages. Validating database connection...${NC}"
+    cd "$DEPLOY_PATH"
+    python3 -c "
+try:
+    from app.db.session import create_tables
+    create_tables()
+    print('Database tables created successfully!')
+except Exception as e:
+    print(f'Error creating database tables: {str(e)}')
+    exit(1)
+"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Database setup failed. Check PostgreSQL configuration.${NC}"
+        echo -e "${YELLOW}Will continue deployment, but service may not work correctly.${NC}"
+    fi
+fi
+
+# Check service status
 echo -e "\n${GREEN}Checking service status...${NC}"
 supervisorctl status apple-subscription
 
@@ -229,8 +301,20 @@ if supervisorctl status apple-subscription | grep -q "FATAL"; then
     chown -R "$APP_USER":"$APP_USER" "$DEPLOY_PATH/logs"
     chmod -R 755 "$DEPLOY_PATH/logs"
     
+    # Run import test to catch Python errors
+    echo -e "\n${YELLOW}Testing application imports...${NC}"
+    sudo -u "$APP_USER" bash -c "cd $DEPLOY_PATH && source venv/bin/activate && python3 -c \"
+try:
+    import sys
+    sys.path.insert(0, '$DEPLOY_PATH')
+    from main import app
+    print('✓ Application imports successful')
+except Exception as e:
+    print(f'✗ Error importing application: {str(e)}')
+\"" 
+    
     # Restart the service
-    echo -e "Restarting service..."
+    echo -e "\n${YELLOW}Restarting service...${NC}"
     supervisorctl restart apple-subscription
     sleep 5
     supervisorctl status apple-subscription
