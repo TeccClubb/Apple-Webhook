@@ -36,6 +36,9 @@ env/
 *.db
 *.sqlite3
 
+# Apple private keys
+keys/*.p8
+
 # Logs
 *.log
 logs/
